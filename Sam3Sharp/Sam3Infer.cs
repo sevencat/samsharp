@@ -8,7 +8,7 @@ using Tokenizers.DotNet;
 
 namespace Sam3Sharp;
 
-public class Sam3Infer : InferBase
+public class Sam3Infer
 {
 	private Sam3InferConfig _config;
 
@@ -124,7 +124,7 @@ public class Sam3Infer : InferBase
 
 	public void PostProcessor()
 	{
-		List<(RectangleF,float)> resultBoxs = new List<(RectangleF,float)>();
+		List<(RectangleF, float)> resultBoxs = new List<(RectangleF, float)>();
 		var presence_score = Sigmoid(dt_presence_logits.GetValue(0));
 		var boxdata = dt_pred_boxes.Buffer;
 		for (int i = 0; i < dt_pred_logits.Length; i++)
@@ -146,9 +146,10 @@ public class Sam3Infer : InferBase
 			if (y2 <= y1)
 				continue;
 			var rc = new RectangleF(x1, y1, x2 - x1, y2 - y1);
-			resultBoxs.Add((rc,score));
+			resultBoxs.Add((rc, score));
 		}
-		resultBoxs.Sort((l,r)=>l.Item2.CompareTo(r.Item2));
+
+		resultBoxs.Sort((l, r) => l.Item2.CompareTo(r.Item2));
 		clonedimg.Mutate(x =>
 		{
 			var pen = Pens.Solid(Color.White, 5);
@@ -278,17 +279,5 @@ public class Sam3Infer : InferBase
 		clonedimg.CopyPixelDataTo(inputTensorValues);
 		var inputTensor =
 			new DenseTensor<byte>(inputTensorValues, new[] { 1, 3, input_image_width_, input_image_height_ });
-	}
-
-	public override InferResultArray forwards(List<Sam3Input> inputs, bool return_mask = false,
-		List<byte> stream = null)
-	{
-		throw new NotImplementedException();
-	}
-
-
-	public override void setup_text_inputs(string input_text, List<long> input_ids, List<long> attention_mask)
-	{
-		throw new NotImplementedException();
 	}
 }

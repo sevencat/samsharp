@@ -5,6 +5,7 @@ using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using Tokenizers.DotNet;
+using Size = SixLabors.ImageSharp.Size;
 
 namespace Sam3Sharp;
 
@@ -12,11 +13,10 @@ public class Sam3Infer
 {
 	private Sam3InferConfig _config;
 
-	private InferenceSession _vision_encoder;
-	private InferenceSession _text_encoder;
-	private InferenceSession _decoder;
+	private readonly InferenceSession _vision_encoder;
+	private readonly InferenceSession _text_encoder;
+	private readonly InferenceSession _decoder;
 	private readonly Tokenizer _tokenizer;
-	private static DataConverter _dataConverter = DataConverter.Native;
 
 	int input_image_width_ = 1008;
 	int input_image_height_ = 1008;
@@ -113,7 +113,7 @@ public class Sam3Infer
 		return 1.0f / (1.0f + (float)Math.Exp(-value));
 	}
 
-	public int LimitRange(int v, int min, int max)
+	public static int LimitRange(int v, int min, int max)
 	{
 		if (v <= min)
 			return min;
@@ -122,8 +122,56 @@ public class Sam3Infer
 		return v;
 	}
 
-	public void PostProcessor()
+	public void PostProcessorMask()
 	{
+		var imgframe = clonedimg.Frames[0];
+		var maskdata = dt_pred_masks.Buffer.Span;
+
+		var presence_score = Sigmoid(dt_presence_logits.GetValue(0));
+		var boxdata = dt_pred_boxes.Buffer;
+		for (int i = 0; i < dt_pred_logits.Length; i++)
+		{
+			float score = Sigmoid(dt_pred_logits.GetValue(i)) * presence_score;
+			if (score <= 0.4f)
+				continue;
+			var startpos = i * 288 * 288;
+			var curmask = maskdata.Slice(startpos, 288 * 288);
+
+			using var curimg = new Image<Rgb24>(288, 288);
+			curimg.DangerousTryGetSinglePixelMemory(out var memptr);
+			var imgspan = memptr.Span;
+			for (var idx = 0; idx < 288 * 288; idx++)
+			{
+				var curmaskvalue = curmask[idx];
+				Rgb24 curpixel = new Rgb24(0, 0, 0);
+				if (curmaskvalue >= 0.5)
+				{
+					curpixel.R = 255;
+					curpixel.G = 255;
+					curpixel.B = 255;
+				}
+
+				imgspan[idx] = curpixel;
+			}
+
+			//图像二值化，通过设定一个阈值将图像像素分为两类（前景/背景），把大于阈值的像素设为最大值，小于的设为最小值，
+			//实现从灰度图到黑白图的转换，用于目标提取、降噪、特征提取等，其支持多种阈值类型
+			// using Mat c_mask_mat = Mat.FromPixelData(288, 288, MatType.CV_32FC1, curplane);
+			// using Mat c_mask_mat2 = new Mat();
+			// Cv2.Threshold(c_mask_mat, c_mask_mat2, 0.5, 1, ThresholdTypes.Binary);
+			// using Mat c_mask_mat3 = new Mat();
+			// c_mask_mat2.ConvertTo(c_mask_mat3, MatType.CV_8UC1, 255.0);
+
+			string imgfn = Path.Combine("D:\\s3", i.ToString() + ".jpg");
+			curimg.SaveAsJpeg(imgfn);
+		}
+
+		clonedimg.SaveAsJpeg("d:\\heap.jpg");
+	}
+
+	public void PostProcessorBox()
+	{
+		//画出包围盒
 		List<(RectangleF, float)> resultBoxs = new List<(RectangleF, float)>();
 		var presence_score = Sigmoid(dt_presence_logits.GetValue(0));
 		var boxdata = dt_pred_boxes.Buffer;
@@ -168,6 +216,7 @@ public class Sam3Infer
 	public void EncodeImage(Image<Rgb24> img)
 	{
 		original_image_sizes_ = (img.Width, img.Height);
+		//现在是扩大到输入的大小，然后从左上贴过去。
 		var destpos = CalcResizeInfo(img.Width, img.Height);
 		clonedimg = img.Clone(x =>
 		{
@@ -256,28 +305,5 @@ public class Sam3Infer
 				w = input_image_width_;
 			return (w, input_image_height_);
 		}
-	}
-
-	public void preprocess(Sam3Input input)
-	{
-		var img = input.image;
-		original_image_sizes_ = (img.Width, img.Height);
-		var destpos = CalcResizeInfo(img.Width, img.Height);
-		using var clonedimg = img.Clone(x =>
-		{
-			x.Resize(new ResizeOptions
-			{
-				Mode = ResizeMode.Manual,
-				Position = AnchorPositionMode.TopLeft,
-				Size = new Size(1008, 1008),
-				Compand = false,
-				PadColor = Color.White,
-				TargetRectangle = new Rectangle(0, 0, destpos.Item1, destpos.Item2)
-			});
-		});
-		byte[] inputTensorValues = new byte[input_image_width_ * input_image_height_ * 3];
-		clonedimg.CopyPixelDataTo(inputTensorValues);
-		var inputTensor =
-			new DenseTensor<byte>(inputTensorValues, new[] { 1, 3, input_image_width_, input_image_height_ });
 	}
 }

@@ -27,7 +27,7 @@ class Program
 		sam3.Decode();
 
 		sam3.Gc();
-		sam3.PostProcessor();
+		sam3.PostProcessorMask();
 		return;
 	}
 	

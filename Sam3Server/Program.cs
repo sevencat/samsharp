@@ -1,30 +1,23 @@
+using NLog.Extensions.Logging;
+using SixLabors.ImageSharp;
+
 namespace Sam3Server;
 
 public class Program
 {
 	public static void Main(string[] args)
 	{
+		Configuration.Default.PreferContiguousImageBuffers = true;
 		var builder = WebApplication.CreateBuilder(args);
-
-		// Add services to the container.
+		builder.Logging.ClearProviders().AddNLog();
 
 		builder.Services.AddControllers();
-		// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 		builder.Services.AddOpenApi();
 
 		var app = builder.Build();
 
-		// Configure the HTTP request pipeline.
-		if (app.Environment.IsDevelopment())
-		{
-			app.MapOpenApi();
-		}
-
-		app.UseAuthorization();
-
-
+		app.MapOpenApi();
 		app.MapControllers();
-
 		app.Run();
 	}
 }

@@ -21,15 +21,15 @@ class Program
 		var imagePath = Path.Combine(modeldir, "x4.jpg");
 
 		var img = Image.Load(imagePath);
-		var img2 = img.CloneAs<Rgb24>();
-		sam3.EncodeImage(img2);
-		sam3.EncodeText("heap");
-		sam3.Decode();
+		var session = new Sam3Session();
+		session.org_image = img.CloneAs<Rgb24>();
+		session.org_image_height = img.Height;
+		session.org_image_width = img.Width;
+		session.prompt_text = "heap";
 
-		sam3.Gc();
-		var result = sam3.PostProcessor();
-		var imgret = sam3.PlotResult(result);
-		imgret.SaveAsJpeg("d:\\ret.jpg");
+		var result = sam3.Handle(session);
+		session.PlotInputImage(result);
+		session.input_image.SaveAsJpeg("d:\\ret.jpg");
 		return;
 	}
 }

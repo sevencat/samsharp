@@ -1,10 +1,7 @@
 ﻿using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
-using SixLabors.ImageSharp.Processing.Processors.Transforms;
 using Tokenizers.DotNet;
 using Size = SixLabors.ImageSharp.Size;
 
@@ -12,17 +9,16 @@ namespace Sam3Sharp;
 
 public class Sam3Infer
 {
-	private Sam3InferConfig _config;
+	private readonly Sam3InferConfig _config;
 
 	private readonly InferenceSession _vision_encoder;
 	private readonly InferenceSession _text_encoder;
 	private readonly InferenceSession _decoder;
 	private readonly Tokenizer _tokenizer;
 
-	int input_image_width_ = 1008;
-	int input_image_height_ = 1008;
-
-	private (int width, int height) original_image_sizes_ = (0, 0);
+	//目前是写死的
+	const int input_image_width_ = 1008;
+	const int input_image_height_ = 1008;
 
 	public InferenceSession CreateInferSession(string model)
 	{
@@ -45,48 +41,41 @@ public class Sam3Infer
 		_tokenizer = new Tokenizer(config.tokenizer_path);
 	}
 
-	private DenseTensor<float> text_features;
-	private DenseTensor<bool> text_mask;
-
-	private DenseTensor<float> fpn_feat_0;
-	private DenseTensor<float> fpn_feat_1;
-	private DenseTensor<float> fpn_feat_2;
-	private DenseTensor<float> fpn_pos_2;
-
-	public void Gc()
+	public Sam3Result Handle(Sam3Session session)
 	{
-		text_features = null;
-		text_mask = null;
-		fpn_feat_0 = null;
-		fpn_feat_1 = null;
-		fpn_feat_2 = null;
-		fpn_pos_2 = null;
-		GC.Collect();
+		EncodeImage(session);
+		EncodeText(session);
+		Decode(session);
+		session.GCInput();
+		var result = PostProcessor(session);
+		session.GCOutput();
+		return result;
 	}
 
-	public void Decode()
+
+	public void Decode(Sam3Session session)
 	{
 		var omd_fpn_feat_0 = _decoder.InputMetadata["fpn_feat_0"];
 		var alt_fpn_feat_0 =
-			new DenseTensor<float>(fpn_feat_0.Buffer,
+			new DenseTensor<float>(session.fpn_feat_0.Buffer,
 				new[] { 1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2], omd_fpn_feat_0.Dimensions[3] });
 
 		var alt_fpn_feat_1 =
-			new DenseTensor<float>(fpn_feat_1.Buffer,
+			new DenseTensor<float>(session.fpn_feat_1.Buffer,
 				new[]
 				{
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 2, omd_fpn_feat_0.Dimensions[3] / 2
 				});
 
 		var alt_fpn_feat_2 =
-			new DenseTensor<float>(fpn_feat_2.Buffer,
+			new DenseTensor<float>(session.fpn_feat_2.Buffer,
 				new[]
 				{
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 4, omd_fpn_feat_0.Dimensions[3] / 4
 				});
 
 		var alt_fpn_pos_2 =
-			new DenseTensor<float>(fpn_pos_2.Buffer,
+			new DenseTensor<float>(session.fpn_pos_2.Buffer,
 				new[]
 				{
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 4, omd_fpn_feat_0.Dimensions[3] / 4
@@ -94,11 +83,11 @@ public class Sam3Infer
 
 		var promptlen = _text_encoder.InputMetadata["input_ids"].Dimensions[1];
 		var alt_text_features =
-			new DenseTensor<float>(text_features.Buffer[0..(promptlen * 256)],
+			new DenseTensor<float>(session.text_features.Buffer[0..(promptlen * 256)],
 				new[] { 1, promptlen, 256 });
 
 		var alt_text_mask =
-			new DenseTensor<bool>(text_mask.Buffer[0..promptlen],
+			new DenseTensor<bool>(session.text_mask.Buffer[0..promptlen],
 				new[] { 1, promptlen });
 
 		using var results = _decoder.Run(new List<NamedOnnxValue>
@@ -110,16 +99,12 @@ public class Sam3Infer
 			NamedOnnxValue.CreateFromTensor("prompt_features", alt_text_features),
 			NamedOnnxValue.CreateFromTensor("prompt_mask", alt_text_mask),
 		});
-		dt_pred_masks = results[0].AsTensor<float>().ToDenseTensor();
-		dt_pred_boxes = results[1].AsTensor<float>().ToDenseTensor();
-		dt_pred_logits = results[2].AsTensor<float>().ToDenseTensor();
-		dt_presence_logits = results[3].AsTensor<float>().ToDenseTensor();
+		session.dt_pred_masks = results[0].AsTensor<float>().ToDenseTensor();
+		session.dt_pred_boxes = results[1].AsTensor<float>().ToDenseTensor();
+		session.dt_pred_logits = results[2].AsTensor<float>().ToDenseTensor();
+		session.dt_presence_logits = results[3].AsTensor<float>().ToDenseTensor();
 	}
 
-	private DenseTensor<float> dt_pred_masks;
-	private DenseTensor<float> dt_pred_boxes; //这个是四个坐标 对应原有的长宽 x1 y1 x2 y2 要乘以1008
-	private DenseTensor<float> dt_pred_logits; //这个是个数组，每个乘以下面的是置信度
-	private DenseTensor<float> dt_presence_logits; //这个应该只有一个值，是个分数
 
 	public static float Sigmoid(double value)
 	{
@@ -135,66 +120,19 @@ public class Sam3Infer
 		return v;
 	}
 
-	public void PostProcessorMask()
+	public Sam3Result PostProcessor(Sam3Session session)
 	{
-		var imgframe = clonedimg.Frames[0];
-		var maskdata = dt_pred_masks.Buffer.Span;
-
-		var presence_score = Sigmoid(dt_presence_logits.GetValue(0));
-		var boxdata = dt_pred_boxes.Buffer;
-		for (int i = 0; i < dt_pred_logits.Length; i++)
-		{
-			float score = Sigmoid(dt_pred_logits.GetValue(i)) * presence_score;
-			if (score <= 0.4f)
-				continue;
-			var startpos = i * 288 * 288;
-			var curmask = maskdata.Slice(startpos, 288 * 288);
-
-			using var curimg = new Image<Rgb24>(288, 288);
-			curimg.DangerousTryGetSinglePixelMemory(out var memptr);
-			var imgspan = memptr.Span;
-			for (var idx = 0; idx < 288 * 288; idx++)
-			{
-				var curmaskvalue = curmask[idx];
-				Rgb24 curpixel = new Rgb24(0, 0, 0);
-				if (curmaskvalue >= 0.5)
-				{
-					curpixel.R = 255;
-					curpixel.G = 255;
-					curpixel.B = 255;
-				}
-
-				imgspan[idx] = curpixel;
-			}
-
-			//图像二值化，通过设定一个阈值将图像像素分为两类（前景/背景），把大于阈值的像素设为最大值，小于的设为最小值，
-			//实现从灰度图到黑白图的转换，用于目标提取、降噪、特征提取等，其支持多种阈值类型
-			// using Mat c_mask_mat = Mat.FromPixelData(288, 288, MatType.CV_32FC1, curplane);
-			// using Mat c_mask_mat2 = new Mat();
-			// Cv2.Threshold(c_mask_mat, c_mask_mat2, 0.5, 1, ThresholdTypes.Binary);
-			// using Mat c_mask_mat3 = new Mat();
-			// c_mask_mat2.ConvertTo(c_mask_mat3, MatType.CV_8UC1, 255.0);
-
-			string imgfn = Path.Combine("D:\\s3", i.ToString() + ".jpg");
-			curimg.SaveAsJpeg(imgfn);
-		}
-
-		clonedimg.SaveAsJpeg("d:\\heap.jpg");
-	}
-
-	public Sam3Result PostProcessor()
-	{
-		Sam3Result result = new Sam3Result();
-		result.model_width = 288; //这个应该从decoder的dim拿
-		result.model_height = 288; //这个应该从decoder的dim拿
+		var result = new Sam3Result();
+		result.mask_model_width = 288; //这个应该从decoder的dim拿
+		result.mask_model_height = 288; //这个应该从decoder的dim拿
 
 		//画出包围盒
-		var presence_score = Sigmoid(dt_presence_logits.GetValue(0));
-		var boxdata = dt_pred_boxes.Buffer;
-		var maskdata = dt_pred_masks.Buffer;
-		for (int i = 0; i < dt_pred_logits.Length; i++)
+		var presence_score = Sigmoid(session.dt_presence_logits.GetValue(0));
+		var boxdata = session.dt_pred_boxes.Buffer;
+		var maskdata = session.dt_pred_masks.Buffer;
+		for (int i = 0; i < session.dt_pred_logits.Length; i++)
 		{
-			float score = Sigmoid(dt_pred_logits.GetValue(i)) * presence_score;
+			float score = Sigmoid(session.dt_pred_logits.GetValue(i)) * presence_score;
 			if (score <= 0.4f)
 				continue;
 			var x1 = (int)(boxdata.Span[i * 4 + 0] * 1008);
@@ -202,10 +140,10 @@ public class Sam3Infer
 			var x2 = (int)(boxdata.Span[i * 4 + 2] * 1008);
 			var y2 = (int)(boxdata.Span[i * 4 + 3] * 1008);
 
-			x1 = LimitRange(x1, 0, 1008);
-			y1 = LimitRange(y1, 0, 1008);
-			x2 = LimitRange(x2, 0, 1008);
-			y2 = LimitRange(y2, 0, 1008);
+			x1 = LimitRange(x1, 0, input_image_width_);
+			y1 = LimitRange(y1, 0, input_image_height_);
+			x2 = LimitRange(x2, 0, input_image_width_);
+			y2 = LimitRange(y2, 0, input_image_height_);
 			if (x2 <= x1)
 				continue;
 			if (y2 <= y1)
@@ -224,79 +162,17 @@ public class Sam3Infer
 			result.items.Add(item);
 		}
 
-		//
-		// resultBoxs.Sort((l, r) => l.Item2.CompareTo(r.Item2));
-		// clonedimg.Mutate(x =>
-		// {
-		// 	var pen = Pens.Solid(Color.White, 5);
-		// 	foreach (var box in resultBoxs)
-		// 	{
-		// 		x.Draw(pen, box.Item1);
-		// 	}
-		// });
-		// clonedimg.SaveAsJpeg("d:\\heap.jpg");
 		return result;
 	}
 
-	public Image<Rgb24> PlotResult(Sam3Result result)
+	public void EncodeImage(Sam3Session session)
 	{
-		var resultimg = clonedimg.Clone();
-		resultimg.Mutate((x =>
-		{ 
-			var pen = Pens.Solid(Color.White, 5);
-			foreach (var item in result.items)
-			{
-				var box = item.box;
-				x.Draw(pen, box);
-				//画透明层
-			}
-		}));
-
-		using var imgmask = new Image<L8>(288, 288, new L8(0));
-		imgmask.DangerousTryGetSinglePixelMemory(out var imgmaskdat);
-		var imgmaskspan = imgmaskdat.Span;
-		foreach (var item in result.items)
-		{
-			var curmask = new Span<float>(item.mask);
-			for (var idx = 0; idx < 288 * 288; idx++)
-			{
-				var curmaskvalue = curmask[idx];
-
-				if (curmaskvalue >= 0.5)
-				{
-					imgmaskspan[idx].PackedValue = 255;
-				}
-			}
-		}
-
-		imgmask.Mutate(x => x.Resize(resultimg.Width, resultimg.Height, new NearestNeighborResampler()));
-		imgmask.DangerousTryGetSinglePixelMemory(out var imgmask2ptr);
-		var imgmask2span = imgmask2ptr.Span;
-		resultimg.DangerousTryGetSinglePixelMemory(out var resultmemptr);
-		var resultimgspan = resultmemptr.Span;
-		for (int y = 0; y < resultimg.Height; y++)
-		{
-			for (int x = 0; x < resultimg.Width; x++)
-			{
-				var pos = y * resultimg.Width + x;
-				var maskpixel = imgmask2span[pos].PackedValue;
-				if (maskpixel > 100)
-					resultimgspan[pos] = new Rgb24(255,255,0);
-			}
-		}
-
-		return resultimg;
-	}
-
-	//这个是分割后的图片
-	public Image<Rgb24> clonedimg;
-
-	public void EncodeImage(Image<Rgb24> img)
-	{
-		original_image_sizes_ = (img.Width, img.Height);
+		var img = session.org_image;
 		//现在是扩大到输入的大小，然后从左上贴过去。
 		var destpos = CalcResizeInfo(img.Width, img.Height);
-		clonedimg = img.Clone(x =>
+		session.emb_image_width = destpos.w;
+		session.emb_image_height = destpos.h;
+		session.input_image = img.Clone(x =>
 		{
 			x.Resize(new ResizeOptions
 			{
@@ -305,29 +181,32 @@ public class Sam3Infer
 				Size = new Size(input_image_width_, input_image_height_),
 				Compand = false,
 				PadColor = Color.White,
-				TargetRectangle = new Rectangle(0, 0, destpos.Item1, destpos.Item2)
+				TargetRectangle = new Rectangle(0, 0, destpos.w, destpos.h)
 			});
 		});
-		float[] inputTensorValues = new float[input_image_width_ * input_image_height_ * 3];
+		var inputTensorValues = new float[input_image_width_ * input_image_height_ * 3];
 
 		var memtensor = new MemoryTensor<float>(inputTensorValues, _vision_encoder.InputMetadata["images"].Dimensions);
-		PixelsNormalizer.NormalizerPixelsToTensor(clonedimg, memtensor, new Vector<int>(0, 0));
+		PixelsNormalizer.NormalizerPixelsToTensor(session.input_image, memtensor, new Vector<int>(0, 0));
 		var inputTensor =
 			new DenseTensor<float>(inputTensorValues, new[] { 1, 3, input_image_width_, input_image_height_ });
 		using var results = _vision_encoder.Run(new List<NamedOnnxValue>
 		{
 			NamedOnnxValue.CreateFromTensor("images", inputTensor),
 		});
-		fpn_feat_0 = results[0].AsTensor<float>().ToDenseTensor();
-		fpn_feat_1 = results[1].AsTensor<float>().ToDenseTensor();
-		fpn_feat_2 = results[2].AsTensor<float>().ToDenseTensor();
-		fpn_pos_2 = results[3].AsTensor<float>().ToDenseTensor();
-		return;
+
+		//看看是不是可以释放掉
+		inputTensorValues = null;
+
+		session.fpn_feat_0 = results[0].AsTensor<float>().ToDenseTensor();
+		session.fpn_feat_1 = results[1].AsTensor<float>().ToDenseTensor();
+		session.fpn_feat_2 = results[2].AsTensor<float>().ToDenseTensor();
+		session.fpn_pos_2 = results[3].AsTensor<float>().ToDenseTensor();
 	}
 
-	public void EncodeText(string txt)
+	public void EncodeText(Sam3Session session)
 	{
-		var ids = _tokenizer.Encode(txt).ToList();
+		var ids = _tokenizer.Encode(session.prompt_text).ToList();
 		if (ids.Count > 32)
 			ids = ids.Take(32).ToList();
 		var masklen = ids.Count;
@@ -358,12 +237,12 @@ public class Sam3Infer
 			NamedOnnxValue.CreateFromTensor("input_ids", text_input_ids_tensor),
 			NamedOnnxValue.CreateFromTensor("attention_mask", text_attention_mask_tensor),
 		});
-		text_features = results.First().AsTensor<float>().ToDenseTensor();
-		text_mask = results[1].AsTensor<bool>().ToDenseTensor();
-		return;
+		session.text_features = results.First().AsTensor<float>().ToDenseTensor();
+		session.text_mask = results[1].AsTensor<bool>().ToDenseTensor();
 	}
 
-	public (int, int) CalcResizeInfo(int width, int height)
+	//计算出缩放后宽高,实际图像为固定,这个是从左上角开始的宽高
+	public (int w, int h) CalcResizeInfo(int width, int height)
 	{
 		var modelimgratio = (decimal)input_image_width_ / (decimal)input_image_height_;
 		var curration = (decimal)width / (decimal)height;

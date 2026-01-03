@@ -28,8 +28,8 @@ class Program
 		session.prompt_text = "heap";
 
 		var result = sam3.Handle(session);
-		session.PlotInputImage(result);
-		session.input_image.SaveAsJpeg("d:\\ret.jpg");
+		session.PlotOrgImage(result);
+		session.org_image.SaveAsJpeg("d:\\ret.jpg");
 		return;
 	}
 }

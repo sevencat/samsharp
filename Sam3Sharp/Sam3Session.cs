@@ -134,7 +134,14 @@ public class Sam3Session : IDisposable
 				//这个是在原画中的位置坐标
 				var pos = y * org_image.Width + x;
 				if (maskpixel > 100)
-					orgimgspan[pos] = new Rgb24(255, 255, 0);
+				{
+					var transcolor = orgimgspan[pos];
+					var gray = (299 * transcolor.R + 587 * transcolor.G + 114 * transcolor.B + 500) / 1000;
+					transcolor.R = (byte)gray;
+					transcolor.G = (byte)gray;
+					transcolor.B = (byte)gray;
+					orgimgspan[pos] = transcolor;
+				}
 			}
 		}
 	}

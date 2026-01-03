@@ -242,7 +242,7 @@ public class Sam3Infer
 	{
 		var resultimg = clonedimg.Clone();
 		resultimg.Mutate((x =>
-		{
+		{ 
 			var pen = Pens.Solid(Color.White, 5);
 			foreach (var item in result.items)
 			{
@@ -252,7 +252,7 @@ public class Sam3Infer
 			}
 		}));
 
-		using var imgmask= new Image<Rgb24>(288, 288,new Rgb24(0,0,0));
+		using var imgmask = new Image<L8>(288, 288, new L8(0));
 		imgmask.DangerousTryGetSinglePixelMemory(out var imgmaskdat);
 		var imgmaskspan = imgmaskdat.Span;
 		foreach (var item in result.items)
@@ -264,28 +264,27 @@ public class Sam3Infer
 
 				if (curmaskvalue >= 0.5)
 				{
-					Rgb24 curpixel = new Rgb24(255, 255, 255);
-					imgmaskspan[idx] = curpixel;
+					imgmaskspan[idx].PackedValue = 255;
 				}
 			}
 		}
-		imgmask.SaveAsJpeg("d:\\msk.jpg");
-		imgmask.Mutate(x=>x.Resize(resultimg.Width,resultimg.Height,new NearestNeighborResampler()));
+
+		imgmask.Mutate(x => x.Resize(resultimg.Width, resultimg.Height, new NearestNeighborResampler()));
 		imgmask.DangerousTryGetSinglePixelMemory(out var imgmask2ptr);
 		var imgmask2span = imgmask2ptr.Span;
 		resultimg.DangerousTryGetSinglePixelMemory(out var resultmemptr);
-		var resultimgspan=resultmemptr.Span;
+		var resultimgspan = resultmemptr.Span;
 		for (int y = 0; y < resultimg.Height; y++)
 		{
 			for (int x = 0; x < resultimg.Width; x++)
 			{
-				var pos=y*resultimg.Width + x;
-				var maskpixel = imgmask2span[pos];
-				if(maskpixel.R>100)
-					resultimgspan[pos] = maskpixel;
+				var pos = y * resultimg.Width + x;
+				var maskpixel = imgmask2span[pos].PackedValue;
+				if (maskpixel > 100)
+					resultimgspan[pos] = new Rgb24(255,255,0);
 			}
 		}
-		
+
 		return resultimg;
 	}
 

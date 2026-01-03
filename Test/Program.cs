@@ -27,8 +27,9 @@ class Program
 		sam3.Decode();
 
 		sam3.Gc();
-		sam3.PostProcessorMask();
+		var result = sam3.PostProcessor();
+		var imgret = sam3.PlotResult(result);
+		imgret.SaveAsJpeg("d:\\ret.jpg");
 		return;
 	}
-	
 }

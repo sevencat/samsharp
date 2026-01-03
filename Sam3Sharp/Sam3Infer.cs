@@ -4,6 +4,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using SixLabors.ImageSharp.Processing.Processors.Transforms;
 using Tokenizers.DotNet;
 using Size = SixLabors.ImageSharp.Size;
 
@@ -23,12 +24,24 @@ public class Sam3Infer
 
 	private (int width, int height) original_image_sizes_ = (0, 0);
 
+	public InferenceSession CreateInferSession(string model)
+	{
+		var modeldata = File.ReadAllBytes(model);
+		if (_config.use_cuda)
+		{
+			var opt = SessionOptions.MakeSessionOptionWithCudaProvider(0);
+			return new InferenceSession(modeldata, opt);
+		}
+
+		return new InferenceSession(modeldata);
+	}
+
 	public Sam3Infer(Sam3InferConfig config)
 	{
 		_config = config;
-		_vision_encoder = new InferenceSession(config.vision_encoder_path);
-		_text_encoder = new InferenceSession(config.text_encoder_path);
-		_decoder = new InferenceSession(config.decoder_path);
+		_vision_encoder = CreateInferSession(config.vision_encoder_path);
+		_text_encoder = CreateInferSession(config.text_encoder_path);
+		_decoder = CreateInferSession(config.decoder_path);
 		_tokenizer = new Tokenizer(config.tokenizer_path);
 	}
 
@@ -169,12 +182,16 @@ public class Sam3Infer
 		clonedimg.SaveAsJpeg("d:\\heap.jpg");
 	}
 
-	public void PostProcessorBox()
+	public Sam3Result PostProcessor()
 	{
+		Sam3Result result = new Sam3Result();
+		result.model_width = 288; //这个应该从decoder的dim拿
+		result.model_height = 288; //这个应该从decoder的dim拿
+
 		//画出包围盒
-		List<(RectangleF, float)> resultBoxs = new List<(RectangleF, float)>();
 		var presence_score = Sigmoid(dt_presence_logits.GetValue(0));
 		var boxdata = dt_pred_boxes.Buffer;
+		var maskdata = dt_pred_masks.Buffer;
 		for (int i = 0; i < dt_pred_logits.Length; i++)
 		{
 			float score = Sigmoid(dt_pred_logits.GetValue(i)) * presence_score;
@@ -194,24 +211,86 @@ public class Sam3Infer
 			if (y2 <= y1)
 				continue;
 			var rc = new RectangleF(x1, y1, x2 - x1, y2 - y1);
-			resultBoxs.Add((rc, score));
+
+			var startpos = i * 288 * 288;
+			var curmask = maskdata.Span.Slice(startpos, 288 * 288);
+			var maskdat = curmask.ToArray();
+			var item = new Sam3ResultItem()
+			{
+				score = score,
+				box = rc,
+				mask = maskdat
+			};
+			result.items.Add(item);
 		}
 
-		resultBoxs.Sort((l, r) => l.Item2.CompareTo(r.Item2));
-		clonedimg.Mutate(x =>
-		{
-			var pen = Pens.Solid(Color.White, 5);
-			foreach (var box in resultBoxs)
-			{
-				x.Draw(pen, box.Item1);
-			}
-		});
-		clonedimg.SaveAsJpeg("d:\\heap.jpg");
-		return;
+		//
+		// resultBoxs.Sort((l, r) => l.Item2.CompareTo(r.Item2));
+		// clonedimg.Mutate(x =>
+		// {
+		// 	var pen = Pens.Solid(Color.White, 5);
+		// 	foreach (var box in resultBoxs)
+		// 	{
+		// 		x.Draw(pen, box.Item1);
+		// 	}
+		// });
+		// clonedimg.SaveAsJpeg("d:\\heap.jpg");
+		return result;
 	}
 
+	public Image<Rgb24> PlotResult(Sam3Result result)
+	{
+		var resultimg = clonedimg.Clone();
+		resultimg.Mutate((x =>
+		{
+			var pen = Pens.Solid(Color.White, 5);
+			foreach (var item in result.items)
+			{
+				var box = item.box;
+				x.Draw(pen, box);
+				//画透明层
+			}
+		}));
 
-	private Image<Rgb24> clonedimg;
+		using var imgmask= new Image<Rgb24>(288, 288,new Rgb24(0,0,0));
+		imgmask.DangerousTryGetSinglePixelMemory(out var imgmaskdat);
+		var imgmaskspan = imgmaskdat.Span;
+		foreach (var item in result.items)
+		{
+			var curmask = new Span<float>(item.mask);
+			for (var idx = 0; idx < 288 * 288; idx++)
+			{
+				var curmaskvalue = curmask[idx];
+
+				if (curmaskvalue >= 0.5)
+				{
+					Rgb24 curpixel = new Rgb24(255, 255, 255);
+					imgmaskspan[idx] = curpixel;
+				}
+			}
+		}
+		imgmask.SaveAsJpeg("d:\\msk.jpg");
+		imgmask.Mutate(x=>x.Resize(resultimg.Width,resultimg.Height,new NearestNeighborResampler()));
+		imgmask.DangerousTryGetSinglePixelMemory(out var imgmask2ptr);
+		var imgmask2span = imgmask2ptr.Span;
+		resultimg.DangerousTryGetSinglePixelMemory(out var resultmemptr);
+		var resultimgspan=resultmemptr.Span;
+		for (int y = 0; y < resultimg.Height; y++)
+		{
+			for (int x = 0; x < resultimg.Width; x++)
+			{
+				var pos=y*resultimg.Width + x;
+				var maskpixel = imgmask2span[pos];
+				if(maskpixel.R>100)
+					resultimgspan[pos] = maskpixel;
+			}
+		}
+		
+		return resultimg;
+	}
+
+	//这个是分割后的图片
+	public Image<Rgb24> clonedimg;
 
 	public void EncodeImage(Image<Rgb24> img)
 	{

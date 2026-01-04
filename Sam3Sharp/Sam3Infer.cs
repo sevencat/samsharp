@@ -35,21 +35,27 @@ public class Sam3Infer
 	public Sam3Infer(Sam3InferConfig config)
 	{
 		_config = config;
-		_vision_encoder = CreateInferSession(config.vision_encoder_path);
-		_text_encoder = CreateInferSession(config.text_encoder_path);
-		_decoder = CreateInferSession(config.decoder_path);
-		_tokenizer = new Tokenizer(config.tokenizer_path);
+		var modeldir = config.model_path;
+		_vision_encoder = CreateInferSession(Path.Combine(modeldir, "vision-encoder-fp16.onnx"));
+		_text_encoder = CreateInferSession(Path.Combine(modeldir, "text-encoder-fp16.onnx"));
+		//这个暂未使用
+		//_geometry_encoder=CreateInferSession(Path.Combine(modeldir, "geometry-encoder-fp16.onnx"));
+		_decoder = CreateInferSession(Path.Combine(modeldir, "decoder-fp16.onnx"));
+		_tokenizer = new Tokenizer(Path.Combine(modeldir, "tokenizer.json"));
 	}
 
 	public Sam3Result Handle(Sam3Session session)
 	{
-		EncodeImage(session);
-		EncodeText(session);
-		Decode(session);
-		session.GCInput();
-		var result = PostProcessor(session);
-		session.GCOutput();
-		return result;
+		lock (this)
+		{
+			EncodeImage(session);
+			EncodeText(session);
+			Decode(session);
+			session.GCInput();
+			var result = PostProcessor(session);
+			session.GCOutput();
+			return result;
+		}
 	}
 
 

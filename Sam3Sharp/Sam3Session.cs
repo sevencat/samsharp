@@ -99,7 +99,8 @@ public class Sam3Session : IDisposable
 		});
 
 		//来画掩码!!!
-		//生成一个掩码图用来合并
+		//生成一个掩码图用来合并,这个后面可以不用生成一个新的image,直接分配数组就行了.将原有的图坐标映射过来.
+		//原有的图片做一个处理就可以了
 		using var imgmask = new Image<L8>(288, 288, new L8(0));
 		imgmask.DangerousTryGetSinglePixelMemory(out var imgmaskdat);
 		var imgmaskspan = imgmaskdat.Span;

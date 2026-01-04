@@ -137,8 +137,8 @@ public class Sam3Session : IDisposable
 				{
 					var transcolor = orgimgspan[pos];
 					var gray = (299 * transcolor.R + 587 * transcolor.G + 114 * transcolor.B + 500) / 1000;
-					transcolor.R = (byte)gray;
-					transcolor.G = (byte)gray;
+					transcolor.R = 0;
+					transcolor.G = 0;
 					transcolor.B = (byte)gray;
 					orgimgspan[pos] = transcolor;
 				}

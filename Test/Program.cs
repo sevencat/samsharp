@@ -9,12 +9,12 @@ class Program
 	static void Main(string[] args)
 	{
 		Configuration.Default.PreferContiguousImageBuffers = true;
-		var modeldir = @"F:\zb\flycheck\rsam3\model";
+		var modeldir = @"F:\ai\models\sam3";
 		var cfg = new Sam3InferConfig();
 		cfg.model_path = modeldir;
-		cfg.use_cuda = false;
+		cfg.use_cuda = true;
 		var sam3 = new Sam3Infer(cfg);
-		
+
 
 		var imagePath = Path.Combine(modeldir, "x7.png");
 

@@ -26,6 +26,7 @@ public class Sam3Infer
 		if (_config.use_cuda)
 		{
 			var opt = SessionOptions.MakeSessionOptionWithCudaProvider(0);
+			opt.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
 			return new InferenceSession(modeldata, opt);
 		}
 

@@ -13,7 +13,7 @@ public class Sam3Infer
 
 	private readonly InferenceSession _vision_encoder;
 	private readonly InferenceSession _text_encoder;
-	private readonly InferenceSession _decoder;
+	private InferenceSession _decoder;
 	private readonly Tokenizer _tokenizer;
 
 	//目前是写死的
@@ -25,7 +25,16 @@ public class Sam3Infer
 		var modeldata = File.ReadAllBytes(model);
 		if (_config.use_cuda)
 		{
-			var opt = SessionOptions.MakeSessionOptionWithCudaProvider(0);
+			Console.WriteLine("使用cuda");
+			var cudaopt = new OrtCUDAProviderOptions();
+			var cudaoptmap = new Dictionary<string, string>()
+			{
+				{ "device_id", "0" },
+				//{ "do_copy_in_default_stream", "True" },
+				//{"gpu_mem_limit","2147483648"},
+			};
+			cudaopt.UpdateOptions(cudaoptmap);
+			var opt = SessionOptions.MakeSessionOptionWithCudaProvider(cudaopt);
 			opt.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
 			return new InferenceSession(modeldata, opt);
 		}
@@ -38,24 +47,42 @@ public class Sam3Infer
 		_config = config;
 		var modeldir = config.model_path;
 		_vision_encoder = CreateInferSession(Path.Combine(modeldir, "vision-encoder-fp16.onnx"));
+
+
 		_text_encoder = CreateInferSession(Path.Combine(modeldir, "text-encoder-fp16.onnx"));
 		//这个暂未使用
 		//_geometry_encoder=CreateInferSession(Path.Combine(modeldir, "geometry-encoder-fp16.onnx"));
-		_decoder = CreateInferSession(Path.Combine(modeldir, "decoder-fp16.onnx"));
+		//_decoder = CreateInferSession(Path.Combine(modeldir, "decoder-fp16.onnx"));
 		_tokenizer = new Tokenizer(Path.Combine(modeldir, "tokenizer.json"));
 	}
 
 	public Sam3Result Handle(Sam3Session session)
 	{
+		Console.WriteLine("开始处理:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 		lock (this)
 		{
-			EncodeImage(session);
-			EncodeText(session);
-			Decode(session);
-			session.GCInput();
-			var result = PostProcessor(session);
-			session.GCOutput();
-			return result;
+			var modeldir = _config.model_path;
+			_decoder = CreateInferSession(Path.Combine(modeldir, "decoder-fp16.onnx"));
+			try
+			{
+				EncodeImage(session);
+				Console.WriteLine("开始处理-1:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+				EncodeText(session);
+				Console.WriteLine("开始处理-2:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+				Decode(session);
+				Console.WriteLine("开始处理-3:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+				session.GCInput();
+				Console.WriteLine("开始处理-4:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+				var result = PostProcessor(session);
+				session.GCOutput();
+				Console.WriteLine("结束处理:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+				return result;
+			}
+			finally
+			{
+				_decoder.Dispose();
+				_decoder = null;
+			}
 		}
 	}
 
@@ -64,25 +91,25 @@ public class Sam3Infer
 	{
 		var omd_fpn_feat_0 = _decoder.InputMetadata["fpn_feat_0"];
 		var alt_fpn_feat_0 =
-			new DenseTensor<float>(session.fpn_feat_0.Buffer,
+			new DenseTensor<float>(session.fpn_feat_0,
 				new[] { 1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2], omd_fpn_feat_0.Dimensions[3] });
 
 		var alt_fpn_feat_1 =
-			new DenseTensor<float>(session.fpn_feat_1.Buffer,
+			new DenseTensor<float>(session.fpn_feat_1,
 				new[]
 				{
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 2, omd_fpn_feat_0.Dimensions[3] / 2
 				});
 
 		var alt_fpn_feat_2 =
-			new DenseTensor<float>(session.fpn_feat_2.Buffer,
+			new DenseTensor<float>(session.fpn_feat_2,
 				new[]
 				{
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 4, omd_fpn_feat_0.Dimensions[3] / 4
 				});
 
 		var alt_fpn_pos_2 =
-			new DenseTensor<float>(session.fpn_pos_2.Buffer,
+			new DenseTensor<float>(session.fpn_pos_2,
 				new[]
 				{
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 4, omd_fpn_feat_0.Dimensions[3] / 4
@@ -97,19 +124,38 @@ public class Sam3Infer
 			new DenseTensor<bool>(session.text_mask.Buffer[0..promptlen],
 				new[] { 1, promptlen });
 
-		using var results = _decoder.Run(new List<NamedOnnxValue>
-		{
-			NamedOnnxValue.CreateFromTensor("fpn_feat_0", alt_fpn_feat_0),
-			NamedOnnxValue.CreateFromTensor("fpn_feat_1", alt_fpn_feat_1),
-			NamedOnnxValue.CreateFromTensor("fpn_feat_2", alt_fpn_feat_2),
-			NamedOnnxValue.CreateFromTensor("fpn_pos_2", alt_fpn_pos_2),
-			NamedOnnxValue.CreateFromTensor("prompt_features", alt_text_features),
-			NamedOnnxValue.CreateFromTensor("prompt_mask", alt_text_mask),
-		});
-		session.dt_pred_masks = results[0].AsTensor<float>().ToDenseTensor();
-		session.dt_pred_boxes = results[1].AsTensor<float>().ToDenseTensor();
-		session.dt_pred_logits = results[2].AsTensor<float>().ToDenseTensor();
-		session.dt_presence_logits = results[3].AsTensor<float>().ToDenseTensor();
+		var ometa_dt_pred_masks = this._decoder.OutputMetadata["pred_masks"];
+		var ometa_dt_pred_boxes = this._decoder.OutputMetadata["pred_boxes"];
+		var ometa_dt_pred_logits = this._decoder.OutputMetadata["pred_logits"];
+		var ometa_dt_presence_logits = this._decoder.OutputMetadata["presence_logits"];
+
+		session.dt_pred_masks = new float[ometa_dt_pred_masks.GetShapeLen()];
+		session.dt_pred_boxes = new float[ometa_dt_pred_boxes.GetShapeLen()];
+		session.dt_pred_logits = new float[ometa_dt_pred_logits.GetShapeLen()];
+		session.dt_presence_logits = new float[ometa_dt_presence_logits.GetShapeLen()];
+
+		var output_dt_pred_masks = new DenseTensor<float>(session.dt_pred_masks, ometa_dt_pred_masks.CopyDimensions());
+		var output_dt_pred_boxes = new DenseTensor<float>(session.dt_pred_boxes, ometa_dt_pred_boxes.CopyDimensions());
+		var output_dt_pred_logits =
+			new DenseTensor<float>(session.dt_pred_logits, ometa_dt_pred_logits.CopyDimensions());
+		var output_dt_presence_logits =
+			new DenseTensor<float>(session.dt_presence_logits, ometa_dt_presence_logits.CopyDimensions());
+
+		_decoder.Run(
+			[
+				NamedOnnxValue.CreateFromTensor("fpn_feat_0", alt_fpn_feat_0),
+				NamedOnnxValue.CreateFromTensor("fpn_feat_1", alt_fpn_feat_1),
+				NamedOnnxValue.CreateFromTensor("fpn_feat_2", alt_fpn_feat_2),
+				NamedOnnxValue.CreateFromTensor("fpn_pos_2", alt_fpn_pos_2),
+				NamedOnnxValue.CreateFromTensor("prompt_features", alt_text_features),
+				NamedOnnxValue.CreateFromTensor("prompt_mask", alt_text_mask),
+			],
+			[
+				NamedOnnxValue.CreateFromTensor("pred_masks", output_dt_pred_masks),
+				NamedOnnxValue.CreateFromTensor("pred_boxes", output_dt_pred_boxes),
+				NamedOnnxValue.CreateFromTensor("pred_logits", output_dt_pred_logits),
+				NamedOnnxValue.CreateFromTensor("presence_logits", output_dt_presence_logits),
+			]);
 	}
 
 
@@ -134,18 +180,18 @@ public class Sam3Infer
 		result.mask_model_height = 288; //这个应该从decoder的dim拿
 
 		//画出包围盒
-		var presence_score = Sigmoid(session.dt_presence_logits.GetValue(0));
-		var boxdata = session.dt_pred_boxes.Buffer;
-		var maskdata = session.dt_pred_masks.Buffer;
+		var presence_score = Sigmoid(session.dt_presence_logits[0]);
+		var boxdata = session.dt_pred_boxes;
+		var maskdata = session.dt_pred_masks;
 		for (int i = 0; i < session.dt_pred_logits.Length; i++)
 		{
-			float score = Sigmoid(session.dt_pred_logits.GetValue(i)) * presence_score;
+			float score = Sigmoid(session.dt_pred_logits[i]) * presence_score;
 			if (score <= 0.4f)
 				continue;
-			var x1 = (int)(boxdata.Span[i * 4 + 0] * 1008);
-			var y1 = (int)(boxdata.Span[i * 4 + 1] * 1008);
-			var x2 = (int)(boxdata.Span[i * 4 + 2] * 1008);
-			var y2 = (int)(boxdata.Span[i * 4 + 3] * 1008);
+			var x1 = (int)(boxdata[i * 4 + 0] * 1008);
+			var y1 = (int)(boxdata[i * 4 + 1] * 1008);
+			var x2 = (int)(boxdata[i * 4 + 2] * 1008);
+			var y2 = (int)(boxdata[i * 4 + 3] * 1008);
 
 			x1 = LimitRange(x1, 0, input_image_width_);
 			y1 = LimitRange(y1, 0, input_image_height_);
@@ -158,7 +204,7 @@ public class Sam3Infer
 			var rc = new RectangleF(x1, y1, x2 - x1, y2 - y1);
 
 			var startpos = i * 288 * 288;
-			var curmask = maskdata.Span.Slice(startpos, 288 * 288);
+			var curmask = new Span<float>(maskdata, startpos, 288 * 288);
 			var maskdat = curmask.ToArray();
 			var item = new Sam3ResultItem()
 			{
@@ -197,18 +243,32 @@ public class Sam3Infer
 		PixelsNormalizer.NormalizerPixelsToTensor(session.input_image, memtensor, new Vector<int>(0, 0));
 		var inputTensor =
 			new DenseTensor<float>(inputTensorValues, new[] { 1, 3, input_image_width_, input_image_height_ });
-		using var results = _vision_encoder.Run(new List<NamedOnnxValue>
-		{
-			NamedOnnxValue.CreateFromTensor("images", inputTensor),
-		});
 
+		var ometa_fpn_feat_0 = _vision_encoder.OutputMetadata["fpn_feat_0"];
+		var ometa_fpn_feat_1 = _vision_encoder.OutputMetadata["fpn_feat_1"];
+		var ometa_fpn_feat_2 = _vision_encoder.OutputMetadata["fpn_feat_2"];
+		var ometa_fpn_pos_2 = _vision_encoder.OutputMetadata["fpn_pos_2"];
+		session.fpn_feat_0 = new float[ometa_fpn_feat_0.GetShapeLen()];
+		session.fpn_feat_1 = new float[ometa_fpn_feat_1.GetShapeLen()];
+		session.fpn_feat_2 = new float[ometa_fpn_feat_2.GetShapeLen()];
+		session.fpn_pos_2 = new float[ometa_fpn_pos_2.GetShapeLen()];
+		Console.WriteLine("开始执行infer:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+
+		var output_fpn_feat_0 = new DenseTensor<float>(session.fpn_feat_0, ometa_fpn_feat_0.CopyDimensions());
+		var output_fpn_feat_1 = new DenseTensor<float>(session.fpn_feat_1, ometa_fpn_feat_1.CopyDimensions());
+		var output_fpn_feat_2 = new DenseTensor<float>(session.fpn_feat_2, ometa_fpn_feat_2.CopyDimensions());
+		var output_fpn_pos_2 = new DenseTensor<float>(session.fpn_pos_2, ometa_fpn_pos_2.CopyDimensions());
+		_vision_encoder.Run([NamedOnnxValue.CreateFromTensor("images", inputTensor)],
+			[
+				NamedOnnxValue.CreateFromTensor("fpn_feat_0", output_fpn_feat_0),
+				NamedOnnxValue.CreateFromTensor("fpn_feat_1", output_fpn_feat_1),
+				NamedOnnxValue.CreateFromTensor("fpn_feat_2", output_fpn_feat_2),
+				NamedOnnxValue.CreateFromTensor("fpn_pos_2", output_fpn_pos_2),
+			]
+		);
+		Console.WriteLine("结束执行infer:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 		//看看是不是可以释放掉
 		inputTensorValues = null;
-
-		session.fpn_feat_0 = results[0].AsTensor<float>().ToDenseTensor();
-		session.fpn_feat_1 = results[1].AsTensor<float>().ToDenseTensor();
-		session.fpn_feat_2 = results[2].AsTensor<float>().ToDenseTensor();
-		session.fpn_pos_2 = results[3].AsTensor<float>().ToDenseTensor();
 	}
 
 	public void EncodeText(Sam3Session session)

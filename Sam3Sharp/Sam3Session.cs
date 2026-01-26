@@ -49,6 +49,7 @@ public class Sam3Session : IDisposable
 	public int emb_image_width { get; set; }
 	public int emb_image_height { get; set; }
 
+	public int[] text_dimensions { get; set; }
 	public DenseTensor<float> text_features { get; set; }
 	public DenseTensor<bool> text_mask { get; set; }
 
@@ -56,8 +57,7 @@ public class Sam3Session : IDisposable
 	public float[] fpn_feat_1 { get; set; }
 	public float[] fpn_feat_2 { get; set; }
 	public float[] fpn_pos_2 { get; set; }
-
-
+	
 	public float[] dt_pred_masks { get; set; } //200*288*288 200是最多200个结果,288*288是把原图弄成288 288 ,需要放大
 	public float[] dt_pred_boxes { get; set; } //这个是四个坐标 对应原有的长宽 x1 y1 x2 y2 要乘以1008
 	public float[] dt_pred_logits { get; set; } //这个是个数组，每个乘以下面的是置信度

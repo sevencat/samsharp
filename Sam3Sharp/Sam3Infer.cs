@@ -11,15 +11,43 @@ public class Sam3Infer
 {
 	private readonly Sam3InferConfig _config;
 
-	private readonly InferenceSession _vision_encoder;
-	private readonly InferenceSession _text_encoder;
-	private InferenceSession _decoder;
+	private byte[] _vision_encoder_model;
+	private byte[] _text_encoder_model;
+	private byte[] _decoder_model;
+	
+	//private readonly InferenceSession _vision_encoder;
+
+	//private readonly InferenceSession _text_encoder;
+	//private InferenceSession _decoder;
 	private readonly Tokenizer _tokenizer;
 
 	//目前是写死的
 	const int input_image_width_ = 1008;
 	const int input_image_height_ = 1008;
 
+	private Dictionary<string, TextEncodeResult> _textEncodeResults = new();
+
+	public InferenceSession CreateInferSession(byte [] modeldata)
+	{
+		if (_config.use_cuda)
+		{
+			Console.WriteLine("使用cuda");
+			var cudaopt = new OrtCUDAProviderOptions();
+			var cudaoptmap = new Dictionary<string, string>()
+			{
+				{ "device_id", "0" },
+				//{ "do_copy_in_default_stream", "True" },
+				//{"gpu_mem_limit","2147483648"},
+			};
+			cudaopt.UpdateOptions(cudaoptmap);
+			var opt = SessionOptions.MakeSessionOptionWithCudaProvider(cudaopt);
+			opt.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+			return new InferenceSession(modeldata, opt);
+		}
+
+		return new InferenceSession(modeldata);
+	}
+	
 	public InferenceSession CreateInferSession(string model)
 	{
 		var modeldata = File.ReadAllBytes(model);
@@ -46,10 +74,13 @@ public class Sam3Infer
 	{
 		_config = config;
 		var modeldir = config.model_path;
-		_vision_encoder = CreateInferSession(Path.Combine(modeldir, "vision-encoder-fp16.onnx"));
-
-
-		_text_encoder = CreateInferSession(Path.Combine(modeldir, "text-encoder-fp16.onnx"));
+		//_vision_encoder = CreateInferSession(Path.Combine(modeldir, "vision-encoder-fp16.onnx"));
+		
+		_vision_encoder_model = File.ReadAllBytes(Path.Combine(modeldir, "vision-encoder-fp16.onnx"));
+		_text_encoder_model=File.ReadAllBytes(Path.Combine(modeldir, "text-encoder-fp16.onnx"));
+		_decoder_model=File.ReadAllBytes(Path.Combine(modeldir, "decoder-fp16.onnx"));
+		
+		//_text_encoder = CreateInferSession(Path.Combine(modeldir, "text-encoder-fp16.onnx"));
 		//这个暂未使用
 		//_geometry_encoder=CreateInferSession(Path.Combine(modeldir, "geometry-encoder-fp16.onnx"));
 		//_decoder = CreateInferSession(Path.Combine(modeldir, "decoder-fp16.onnx"));
@@ -61,34 +92,28 @@ public class Sam3Infer
 		Console.WriteLine("开始处理:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 		lock (this)
 		{
-			var modeldir = _config.model_path;
-			_decoder = CreateInferSession(Path.Combine(modeldir, "decoder-fp16.onnx"));
-			try
-			{
-				EncodeImage(session);
-				Console.WriteLine("开始处理-1:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-				EncodeText(session);
-				Console.WriteLine("开始处理-2:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-				Decode(session);
-				Console.WriteLine("开始处理-3:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-				session.GCInput();
-				Console.WriteLine("开始处理-4:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-				var result = PostProcessor(session);
-				session.GCOutput();
-				Console.WriteLine("结束处理:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-				return result;
-			}
-			finally
-			{
-				_decoder.Dispose();
-				_decoder = null;
-			}
+			
+
+			EncodeImage(session);
+			Console.WriteLine("开始处理-1:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+			EncodeText(session);
+			Console.WriteLine("开始处理-2:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+			Decode(session);
+			Console.WriteLine("开始处理-3:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+			session.GCInput();
+			Console.WriteLine("开始处理-4:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+			var result = PostProcessor(session);
+			session.GCOutput();
+			Console.WriteLine("结束处理:{0}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+			return result;
 		}
 	}
 
 
 	public void Decode(Sam3Session session)
 	{
+		var modeldir = _config.model_path;
+		using var _decoder = CreateInferSession(_decoder_model);
 		var omd_fpn_feat_0 = _decoder.InputMetadata["fpn_feat_0"];
 		var alt_fpn_feat_0 =
 			new DenseTensor<float>(session.fpn_feat_0,
@@ -115,7 +140,8 @@ public class Sam3Infer
 					1, omd_fpn_feat_0.Dimensions[1], omd_fpn_feat_0.Dimensions[2] / 4, omd_fpn_feat_0.Dimensions[3] / 4
 				});
 
-		var promptlen = _text_encoder.InputMetadata["input_ids"].Dimensions[1];
+		//var promptlen = _text_encoder.InputMetadata["input_ids"].Dimensions[1];
+		var promptlen = session.text_dimensions[1];
 		var alt_text_features =
 			new DenseTensor<float>(session.text_features.Buffer[0..(promptlen * 256)],
 				new[] { 1, promptlen, 256 });
@@ -124,10 +150,10 @@ public class Sam3Infer
 			new DenseTensor<bool>(session.text_mask.Buffer[0..promptlen],
 				new[] { 1, promptlen });
 
-		var ometa_dt_pred_masks = this._decoder.OutputMetadata["pred_masks"];
-		var ometa_dt_pred_boxes = this._decoder.OutputMetadata["pred_boxes"];
-		var ometa_dt_pred_logits = this._decoder.OutputMetadata["pred_logits"];
-		var ometa_dt_presence_logits = this._decoder.OutputMetadata["presence_logits"];
+		var ometa_dt_pred_masks = _decoder.OutputMetadata["pred_masks"];
+		var ometa_dt_pred_boxes = _decoder.OutputMetadata["pred_boxes"];
+		var ometa_dt_pred_logits = _decoder.OutputMetadata["pred_logits"];
+		var ometa_dt_presence_logits = _decoder.OutputMetadata["presence_logits"];
 
 		session.dt_pred_masks = new float[ometa_dt_pred_masks.GetShapeLen()];
 		session.dt_pred_boxes = new float[ometa_dt_pred_boxes.GetShapeLen()];
@@ -220,6 +246,8 @@ public class Sam3Infer
 
 	public void EncodeImage(Sam3Session session)
 	{
+		var modeldir = _config.model_path;
+		using var _vision_encoder = CreateInferSession(_vision_encoder_model);
 		var img = session.org_image;
 		//现在是扩大到输入的大小，然后从左上贴过去。
 		var destpos = CalcResizeInfo(img.Width, img.Height);
@@ -273,6 +301,14 @@ public class Sam3Infer
 
 	public void EncodeText(Sam3Session session)
 	{
+		if (_textEncodeResults.TryGetValue(session.prompt_text, out var result))
+		{
+			session.text_features = result.text_features;
+			session.text_mask = result.text_mask;
+			session.text_dimensions = result.text_dimensions;
+			return;
+		}
+
 		var ids = _tokenizer.Encode(session.prompt_text).ToList();
 		if (ids.Count > 32)
 			ids = ids.Take(32).ToList();
@@ -299,6 +335,9 @@ public class Sam3Infer
 			text_attention_mask[i] = 0;
 		var text_input_ids_tensor = new DenseTensor<long>(text_input_ids, [8, 32]);
 		var text_attention_mask_tensor = new DenseTensor<long>(text_attention_mask, [8, 32]);
+
+		var modeldir = _config.model_path;
+		using var _text_encoder = CreateInferSession(_text_encoder_model);
 		using var results = _text_encoder.Run(new List<NamedOnnxValue>
 		{
 			NamedOnnxValue.CreateFromTensor("input_ids", text_input_ids_tensor),
@@ -306,6 +345,15 @@ public class Sam3Infer
 		});
 		session.text_features = results.First().AsTensor<float>().ToDenseTensor();
 		session.text_mask = results[1].AsTensor<bool>().ToDenseTensor();
+		session.text_dimensions = _text_encoder.InputMetadata["input_ids"].CopyDimensions();
+		var curresult = new TextEncodeResult()
+		{
+			prompt = session.prompt_text,
+			text_features = session.text_features,
+			text_mask = session.text_mask,
+			text_dimensions = _text_encoder.InputMetadata["input_ids"].CopyDimensions(),
+		};
+		_textEncodeResults.Add(session.prompt_text, curresult);
 	}
 
 	//计算出缩放后宽高,实际图像为固定,这个是从左上角开始的宽高

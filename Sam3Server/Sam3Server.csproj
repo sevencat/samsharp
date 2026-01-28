@@ -17,4 +17,10 @@
       <ProjectReference Include="..\Sam3Sharp\Sam3Sharp.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <None Update="rapidoc-min.js">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
 </Project>

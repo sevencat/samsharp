@@ -212,7 +212,7 @@ public class Sam3Infer
 		for (int i = 0; i < session.dt_pred_logits.Length; i++)
 		{
 			float score = Sigmoid(session.dt_pred_logits[i]) * presence_score;
-			if (score <= 0.4f)
+			if (score <= 0.3f)
 				continue;
 			var x1 = (int)(boxdata[i * 4 + 0] * 1008);
 			var y1 = (int)(boxdata[i * 4 + 1] * 1008);

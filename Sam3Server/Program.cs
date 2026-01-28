@@ -24,6 +24,11 @@ public class Program
 		var app = builder.Build();
 
 		app.MapOpenApi();
+
+		var exedir = AppDomain.CurrentDomain.BaseDirectory;
+		var filectx = File.ReadAllText(Path.Combine(exedir, "rapidoc-min.js"));
+		app.MapGet("/rapidoc-min.js", () =>  Results.Text(filectx, "text/javascript", Encoding.UTF8));
+
 		app.MapGet("openapiui", (() => Results.Text(RedocHtml, "text/html", Encoding.UTF8)));
 		app.MapControllers();
 		app.Run();
@@ -41,10 +46,10 @@ public class Program
 	                                 <html>
 	                                   <head>
 	                                     <meta charset="utf-8"> <!-- Important: rapi-doc uses utf8 characters -->
-	                                     <script type="module" src="https://unpkg.com/rapidoc/dist/rapidoc-min.js"></script>
+	                                     <script type="module" src="/rapidoc-min.js"></script>
 	                                   </head>
 	                                   <body>
-	                                     <rapi-doc server-url="http://localhost:9040/" spec-url = "/openapi/v1.json"> </rapi-doc>
+	                                     <rapi-doc server-url="http://localhost:9021/" spec-url = "/openapi/v1.json"> </rapi-doc>
 	                                   </body>
 	                                 </html>
 	                                 """;
